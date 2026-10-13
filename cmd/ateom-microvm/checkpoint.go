@@ -290,7 +290,7 @@ func (s *AteomService) snapshotVMState(ctx context.Context, client *ch.Client, r
 		// Eager restore already pulled every populated extent into guest memory, so
 		// what cloud-hypervisor just wrote is the whole guest, not a delta. Merging
 		// would copy the entire resident set onto the restore source for nothing.
-		slog.InfoContext(ctx, "Snapshot is self-contained (eager restore); skipping merge",
+		slog.InfoContext(ctx, "Snapshot is self-contained (copy or CoW restore); skipping merge",
 			slog.String("id", actorUID))
 	} else if ra != nil && ra.restoreSourceDir != "" {
 		tMerge := time.Now()
@@ -370,13 +370,15 @@ func (s *AteomService) teardownActor(ctx context.Context, id string, actorDirs *
 
 		// Kill the CH process ateom launched.
 		if ra.chCmd != nil && ra.chCmd.Process != nil {
-			_ = ra.chCmd.Process.Kill()
-			_, _ = ra.chCmd.Process.Wait()
+			if err := s.stopActorHostProcess(ctx, id, ra.chCmd); err != nil {
+				return err
+			}
 		}
 		// Kill the virtiofsd (after CH, its only client).
 		if ra.vfsdCmd != nil && ra.vfsdCmd.Process != nil {
-			_ = ra.vfsdCmd.Process.Kill()
-			_, _ = ra.vfsdCmd.Process.Wait()
+			if err := s.stopActorHostProcess(ctx, id, ra.vfsdCmd); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -385,13 +387,23 @@ func (s *AteomService) teardownActor(ctx context.Context, id string, actorDirs *
 	// it also drops the merged rootfs overlay mounts, which MUST come before
 	// the upper-dir removal below (removing a live overlay's upperdir would
 	// corrupt the mount rather than delete the files).
-	s.cleanupSandboxState(ctx, id)
+	if err := s.cleanupSandboxState(ctx, id); err != nil {
+		return err
+	}
+	if ra != nil && ra.snapshotLease != nil {
+		if err := s.releaseSnapshotLease(id, ra.snapshotLease); err != nil {
+			errs = append(errs, fmt.Errorf("retaining CoW snapshot lease: %w", err))
+		}
+	}
 
 	// Remove the rootfs upper dir: ateom owns it — atelet's actor-dir reset
 	// doesn't know it — and its absence is what marks a worker as holding no
 	// disk-backed upper. Runs after the checkpoint tar, which is already on disk.
 	if err := os.RemoveAll(rootfsUpperDir(actorDirs)); err != nil {
 		slog.WarnContext(ctx, "Failed to remove rootfs upper dir", slog.String("actorUID", id), slog.Any("err", err))
+		if s.requiresActorExitProof() {
+			errs = append(errs, fmt.Errorf("remove rootfs upper directory: %w", err))
+		}
 	}
 
 	// Detach the bundle rootfs overlays composed in buildActorContainers, so
@@ -447,6 +459,9 @@ func (s *AteomService) endPreviousActivation(ctx context.Context, actorUID strin
 			return fmt.Errorf("while stopping the actor's previous micro-VM: %w", err)
 		}
 	}
+	if err := s.ensureActorStopped(ctx, actorUID); err != nil {
+		return err
+	}
 	if old != nil {
 		s.recordFinal(ctx, old)
 	}
@@ -470,12 +485,21 @@ func (s *AteomService) terminateWorkload(ctx context.Context, actor resources.Ac
 	}
 
 	actorUID := actor.UID
-	if err := s.stopActorVM(ctx, actorUID, actorDirs); err != nil {
-		errs = append(errs, fmt.Errorf("while tearing down actor: %w", err))
+	teardownErr := s.stopActorVM(ctx, actorUID, actorDirs)
+	if teardownErr != nil {
+		teardownErr = fmt.Errorf("while tearing down actor: %w", teardownErr)
 	}
-	// Remove attribution after teardown; a failed checkpoint may leave the VM running.
-	if err := s.unhostActor(ctx, actorUID); err != nil {
-		errs = append(errs, fmt.Errorf("while cleaning up actor network: %w", err))
+	if err := s.finishActorTermination(ctx, actorUID, teardownErr); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// finishActorTermination keeps strict cleanup retryable, including the snapshot
+// lease handle, when execution stopped but filesystem cleanup did not finish.
+func (s *AteomService) finishActorTermination(ctx context.Context, actorUID string, teardownErr error) error {
+	if teardownErr != nil && s.requiresActorExitProof() {
+		return teardownErr
+	}
+	return errors.Join(teardownErr, s.unhostActor(ctx, actorUID))
 }

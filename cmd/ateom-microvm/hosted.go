@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -30,6 +31,8 @@ import (
 	"github.com/agent-substrate/substrate/internal/ateomnet/netns"
 	"github.com/agent-substrate/substrate/internal/ateomstats"
 	"github.com/agent-substrate/substrate/internal/atunnel"
+	"github.com/agent-substrate/substrate/internal/cpuplacement"
+	"github.com/agent-substrate/substrate/internal/imagecache"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/internal/sizing"
 )
@@ -58,10 +61,20 @@ type hostedActor struct {
 func (s *AteomService) admitActor(attribution resources.ActorAttribution, resumesGuest bool) (*hostedActor, *ateomnet.SandboxSession, error) {
 	s.actorsMu.Lock()
 	defer s.actorsMu.Unlock()
+	occupied := len(s.actors) + s.draining
+	recoveredHere := false
+	for _, uid := range s.runtimeResources.recoveredActors() {
+		if _, present := s.actors[uid]; !present {
+			occupied++
+		}
+		if uid == attribution.UID {
+			recoveredHere = true
+		}
+	}
 	var stale *ateomnet.SandboxSession
 	if old, ok := s.actors[attribution.UID]; ok {
 		stale = old.network
-	} else if len(s.actors)+s.draining >= s.maxActors {
+	} else if !recoveredHere && occupied >= s.maxActors {
 		return nil, nil, apierror.ResourceExhausted("worker is full: %d actors", s.maxActors)
 	}
 	hosted := &hostedActor{attribution: attribution, usage: ateomstats.NewActivation(time.Now(), resumesGuest)}
@@ -110,6 +123,22 @@ func (s *AteomService) hostActor(ctx context.Context, attribution resources.Acto
 
 // actorLeaf opens the actor's cgroup, or returns nil when the worker has none.
 func (s *AteomService) actorLeaf(actorUID string, size sizing.SandboxSize) (*ateomcgroup.ActorLeaf, error) {
+	if s.requiresActorExitProof() && s.runtimeResources != nil && s.runtimeResources.verifyHierarchy != nil {
+		if err := s.runtimeResources.verifyHierarchy(); err != nil {
+			return nil, err
+		}
+	}
+	if s.runtimeResources != nil && s.runtimeResources.allocator != nil {
+		_, vcpus, _ := s.guestConfig()
+		leaf, err := s.runtimeResources.acquire(actorUID, size, vcpus)
+		if errors.Is(err, cpuplacement.ErrCapacity) {
+			return nil, apierror.ResourceExhausted("Actor CPU capacity: %v", err)
+		}
+		if errors.Is(err, cpuplacement.ErrPlacement) || errors.Is(err, cpuplacement.ErrBoundary) || errors.Is(err, cpuplacement.ErrOwnerExists) {
+			return nil, apierror.FailedPrecondition("Actor CPU placement: %v", err)
+		}
+		return leaf, err
+	}
 	if !s.actorCgroups {
 		return nil, nil
 	}
@@ -118,7 +147,13 @@ func (s *AteomService) actorLeaf(actorUID string, size sizing.SandboxSize) (*ate
 
 // cleanupSandboxState kills what is left of the actor's host processes and
 // clears its sandbox directories.
-func (s *AteomService) cleanupSandboxState(ctx context.Context, actorUID string) {
+func (s *AteomService) cleanupSandboxState(ctx context.Context, actorUID string) error {
+	if s.requiresActorExitProof() {
+		if err := s.ensureActorStopped(ctx, actorUID); err != nil {
+			return err
+		}
+		return kata.CleanupSandboxFiles(ctx, actorUID)
+	}
 	if s.actorCgroups {
 		killCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := ateomcgroup.KillActorLeaf(killCtx, actorUID); err != nil {
@@ -127,11 +162,26 @@ func (s *AteomService) cleanupSandboxState(ctx context.Context, actorUID string)
 		cancel()
 	}
 	kata.CleanupSandboxState(ctx, actorUID)
+	return nil
+}
+
+// cleanupActorBundle keeps live filesystem consumers intact after uncertain exit.
+func (s *AteomService) cleanupActorBundle(ctx context.Context, actorUID, bundleDir string) error {
+	if err := s.ensureActorStopped(ctx, actorUID); err != nil {
+		return err
+	}
+	return imagecache.UnmountAllUnder(bundleDir)
 }
 
 // unhostActor removes an actor, its network, and its cgroup. Repeated calls are
 // safe. The caller must stop the VM first.
 func (s *AteomService) unhostActor(ctx context.Context, actorUID string) error {
+	if err := s.ensureActorStopped(ctx, actorUID); err != nil {
+		return err
+	}
+	if err := s.releaseRuntimeResources(actorUID); err != nil {
+		return err
+	}
 	s.actorsMu.Lock()
 	hosted, ok := s.actors[actorUID]
 	delete(s.actors, actorUID)

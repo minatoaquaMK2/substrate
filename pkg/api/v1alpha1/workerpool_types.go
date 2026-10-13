@@ -85,6 +85,7 @@ type WorkerPoolPodTemplate struct {
 	ServiceAccountName *string `json:"serviceAccountName,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="!has(self.microVMResources) || (has(self.sandboxClasses) && size(self.sandboxClasses) == 1 && self.sandboxClasses[0].name == 'microvm')",message="microVMResources requires the microvm sandbox class"
 type WorkerPoolSpec struct {
 	// Replicas is the number of worker pods to run.
 	// +required
@@ -101,6 +102,14 @@ type WorkerPoolSpec struct {
 	// +optional
 	Template *WorkerPoolPodTemplate `json:"template,omitempty"`
 
+	// MicroVMResources configures opt-in Worker-local CPU placement and memory
+	// restoration. It is allowed only for the microvm sandbox class. Omission
+	// preserves the runtime defaults and adds no resource-management arguments.
+	// These settings do not grant node-wide CPU exclusivity or increase quotas.
+	//
+	// +optional
+	MicroVMResources *MicroVMResourcesSpec `json:"microVMResources,omitempty"`
+
 	// SandboxClasses lists the sandbox runtime families this pool runs. Exactly
 	// one entry is allowed today. The names cannot change after creation.
 	//
@@ -111,6 +120,167 @@ type WorkerPoolSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	SandboxClasses []WorkerPoolSandboxClass `json:"sandboxClasses,omitempty"`
+}
+
+// CPUAllocationPolicy selects logical-CPU sharing among Actors in one Worker.
+//
+// +kubebuilder:validation:Enum=Off;Shared;NonOverlapping
+type CPUAllocationPolicy string
+
+const (
+	CPUAllocationPolicyOff            CPUAllocationPolicy = "Off"
+	CPUAllocationPolicyShared         CPUAllocationPolicy = "Shared"
+	CPUAllocationPolicyNonOverlapping CPUAllocationPolicy = "NonOverlapping"
+)
+
+// CPUEnforcementPolicy controls initialization when CPU placement is unavailable.
+// Capacity exhaustion and invalid configuration always fail closed.
+//
+// +kubebuilder:validation:Enum=Required;BestEffort
+type CPUEnforcementPolicy string
+
+const (
+	CPUEnforcementPolicyRequired   CPUEnforcementPolicy = "Required"
+	CPUEnforcementPolicyBestEffort CPUEnforcementPolicy = "BestEffort"
+)
+
+// CPUPlacementPolicy chooses a locality requirement or a degradable preference.
+//
+// +kubebuilder:validation:Enum=Any;PreferLLC;RequireLLC;PreferNUMA;RequireNUMA
+type CPUPlacementPolicy string
+
+const (
+	CPUPlacementPolicyAny         CPUPlacementPolicy = "Any"
+	CPUPlacementPolicyPreferLLC   CPUPlacementPolicy = "PreferLLC"
+	CPUPlacementPolicyRequireLLC  CPUPlacementPolicy = "RequireLLC"
+	CPUPlacementPolicyPreferNUMA  CPUPlacementPolicy = "PreferNUMA"
+	CPUPlacementPolicyRequireNUMA CPUPlacementPolicy = "RequireNUMA"
+)
+
+// MemoryPlacementPolicy selects allowed memory nodes for new Actor allocations.
+//
+// +kubebuilder:validation:Enum=Inherit;Local
+type MemoryPlacementPolicy string
+
+const (
+	MemoryPlacementPolicyInherit MemoryPlacementPolicy = "Inherit"
+	MemoryPlacementPolicyLocal   MemoryPlacementPolicy = "Local"
+)
+
+// MemoryRestorePolicy selects the VMM memory restore path. CoW policies still
+// require a compatible VMM, snapshot, and private-memory device configuration.
+//
+// +kubebuilder:validation:Enum=Legacy;CopyOnWritePreferred;CopyOnWriteRequired
+type MemoryRestorePolicy string
+
+const (
+	MemoryRestorePolicyLegacy               MemoryRestorePolicy = "Legacy"
+	MemoryRestorePolicyCopyOnWritePreferred MemoryRestorePolicy = "CopyOnWritePreferred"
+	MemoryRestorePolicyCopyOnWriteRequired  MemoryRestorePolicy = "CopyOnWriteRequired"
+)
+
+// MicroVMResourcesSpec contains the supported MicroVM resource policy settings.
+// CPU IDs are host-specific operator choices and must fit every selected
+// Worker's effective parent boundary. Runtime checks remain authoritative for
+// topology, controller delegation, occupancy, and restore compatibility.
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.cpuAllocationPolicy) && self.cpuAllocationPolicy != 'Off') || (!has(self.actorCPUs) && (!has(self.cpuPlacement) || self.cpuPlacement == 'Any') && (!has(self.memoryPlacement) || self.memoryPlacement == 'Inherit'))",message="actorCPUs, topology placement, and local memory placement require cpuAllocationPolicy Shared or NonOverlapping"
+// +kubebuilder:validation:XValidation:rule="!has(self.memoryRestorePolicy) || self.memoryRestorePolicy == 'Legacy' || has(self.memorySnapshotCacheDirectory)",message="CoW restoration requires memorySnapshotCacheDirectory"
+type MicroVMResourcesSpec struct {
+	// CPUAllocationPolicy controls Worker-local logical-CPU sharing. Off keeps
+	// the existing unconstrained path unless managementReservedCPUs is set.
+	// NonOverlapping retains fractional bandwidth limits and may reduce density.
+	// Defaults to Off.
+	//
+	// +optional
+	// +kubebuilder:default=Off
+	CPUAllocationPolicy *CPUAllocationPolicy `json:"cpuAllocationPolicy,omitempty"`
+
+	// CPUEnforcement selects Required initialization or an observable
+	// BestEffort fallback when support is unavailable. Defaults to Required.
+	//
+	// +optional
+	// +kubebuilder:default=Required
+	CPUEnforcement *CPUEnforcementPolicy `json:"cpuEnforcement,omitempty"`
+
+	// ActorCPUs is an optional debug CPU range list, such as "2-3,8". Its width
+	// controls the Actor CPU fence without changing guest vCPUs or CPU quota.
+	// Omission selects CPUs automatically. Runtime validates range ordering,
+	// capacity, reservation, topology, and current effective boundaries.
+	//
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:Pattern=`^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$`
+	ActorCPUs *string `json:"actorCPUs,omitempty"`
+
+	// ManagementReservedCPUs is a CPU range list excluded from every managed
+	// Actor. Management keeps the full parent CPU set. This is not guaranteed
+	// CPU time when a shared ancestor quota is exhausted. Omission reserves none.
+	//
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:Pattern=`^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$`
+	ManagementReservedCPUs *string `json:"managementReservedCPUs,omitempty"`
+
+	// CPUPlacement selects any logical CPUs, one last-level cache (LLC), or
+	// one NUMA node. Prefer policies report degradation; Require policies
+	// reject allocations that cannot fit a known single domain. Defaults to Any.
+	//
+	// +optional
+	// +kubebuilder:default=Any
+	CPUPlacement *CPUPlacementPolicy `json:"cpuPlacement,omitempty"`
+
+	// MemoryPlacement selects inherited memory nodes or the selected CPUs'
+	// local nodes. Local requires known topology and a valid parent memory-node
+	// boundary; it does not promise migration of existing/shared pages.
+	// Defaults to Inherit.
+	//
+	// +optional
+	// +kubebuilder:default=Inherit
+	MemoryPlacement *MemoryPlacementPolicy `json:"memoryPlacement,omitempty"`
+
+	// ManagementCPUWeight sets the management leaf's relative cpu.weight.
+	// Zero leaves the weight unchanged; 1 through 10000 selects a weight.
+	// This does not guarantee CPU time under a shared parent quota. Defaults to 0.
+	//
+	// +optional
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=10000
+	ManagementCPUWeight *int32 `json:"managementCPUWeight,omitempty"`
+
+	// StartupConcurrency limits concurrent cold boots and restores per Worker.
+	// Zero retains unbounded startup concurrency. Defaults to 0.
+	//
+	// +optional
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=2147483647
+	StartupConcurrency *int32 `json:"startupConcurrency,omitempty"`
+
+	// MemoryRestorePolicy selects Legacy, observable CopyOnWritePreferred fallback, or
+	// CopyOnWriteRequired compatibility enforcement. Current virtiofs-backed Actors
+	// require shared memory and cannot use private CoW restoration.
+	// Defaults to Legacy.
+	//
+	// +optional
+	// +kubebuilder:default=Legacy
+	MemoryRestorePolicy *MemoryRestorePolicy `json:"memoryRestorePolicy,omitempty"`
+
+	// MemorySnapshotCacheDirectory is an absolute private runtime-owned cache
+	// directory for immutable snapshot leases. It is required for either CoW
+	// policy. Path components may contain letters, numbers, dots, underscores,
+	// and hyphens, but must not be '.' or '..'. No additional volume is mounted;
+	// operators must provide a writable path with the intended lifecycle.
+	//
+	// +optional
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:Pattern=`^/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+/?$`
+	// +kubebuilder:validation:XValidation:rule="self.split('/').all(part, part != '.' && part != '..')",message="cache directory must not contain dot or parent path components"
+	MemorySnapshotCacheDirectory *string `json:"memorySnapshotCacheDirectory,omitempty"`
 }
 
 // WorkerPoolSandboxClass is one sandbox runtime family a WorkerPool runs.

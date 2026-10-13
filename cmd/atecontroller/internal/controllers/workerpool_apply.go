@@ -143,6 +143,10 @@ func buildDeploymentApplyConfig(wp *atev1alpha1.WorkerPool, otel ateomOTelSettin
 		"--atunnel-egress-listen-address=0.0.0.0:15001",
 		"--atunnel-egress-trust-bundle="+atunnelEgressTrustMountPath+"/trust-bundle.pem",
 	)
+	// applyDeployment validates these typed settings before constructing or
+	// changing a Deployment. A missing block contributes no arguments.
+	resourceArgs, _ := microVMResourceArgs(wp)
+	args = append(args, resourceArgs...)
 
 	containerAC := corev1ac.Container().
 		WithName("ateom").

@@ -51,6 +51,9 @@ import (
 // cloud-hypervisor process directly (booted by RunWorkload or relaunched by
 // RestoreWorkload), so it tracks that process and its api-socket for teardown.
 type runningActor struct {
+	// snapshotLease pins the immutable CoW source until process teardown is proven.
+	snapshotLease interface{ Release() error }
+
 	// baseID is the FROZEN base sandbox id propagated across this actor's restore
 	// lineage. For a cold-run actor this is the actor's own id; for a restored
 	// actor it is the id read from the snapshot's base-id file (the golden id,
@@ -78,10 +81,9 @@ type runningActor struct {
 	// (preserve_restore_dir): the next checkpoint must copy-merge, not move it.
 	preserveRestoreSource bool
 
-	// snapshotIsSelfContained is set when this actor was restored eagerly, which
-	// reads every populated extent up front. Every page the snapshot had is then
-	// resident, so cloud-hypervisor's next snapshot already holds all of it and
-	// there is no delta to overlay onto restoreSourceDir.
+	// snapshotIsSelfContained is set after eager or strict private CoW restore.
+	// Eager memory is resident; CoW checkpoints stream the mapped guest bytes,
+	// including private dirty pages. Neither is an OnDemand sparse delta.
 	snapshotIsSelfContained bool
 
 	// guestAgent is the kata-agent ttrpc client retained past boot. Two things
@@ -250,6 +252,11 @@ func (s *AteomService) RunWorkload(ctx context.Context, req *ateompb.RunWorkload
 		return nil, err
 	}
 	defer release()
+	startupDone, err := s.waitRuntimeStartup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer startupDone()
 
 	if err := s.tunnel.Deactivate(ctx, ateomstats.ActorAttributionFromRequest(req)); err != nil {
 		return nil, err
@@ -282,7 +289,9 @@ func (s *AteomService) RunWorkload(ctx context.Context, req *ateompb.RunWorkload
 			// Detached: the RPC's context may be what failed it.
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cleanupCancel()
-			_ = s.unhostActor(cleanupCtx, attribution.UID)
+			if err := s.unhostActor(cleanupCtx, attribution.UID); err != nil {
+				slog.ErrorContext(cleanupCtx, "Actor cleanup incomplete after failed startup; resource ownership retained", slog.String("actorUID", attribution.UID), slog.Any("err", err))
+			}
 		}
 	}()
 
@@ -364,6 +373,9 @@ func (s *AteomService) coldBootActorRetrying(ctx context.Context, p actorBootPar
 		}
 		slog.WarnContext(ctx, "Micro-VM stopped before the kata-agent answered; retrying cold boot",
 			slog.String("id", p.actorUID), slog.Int("attempt", attempt), slog.Any("err", err))
+		if err := s.endPreviousActivation(ctx, p.actorUID, p.actorDirs); err != nil {
+			return err
+		}
 		// The failed attempt deactivated egress, which retires the listener
 		// bound to it, so the network is rebuilt. The actor keeps its slot.
 		if _, err := s.hostActor(ctx, p.attribution(), false); err != nil {
@@ -415,7 +427,7 @@ func (s *AteomService) coldBootActor(ctx context.Context, p actorBootParams) (re
 			}
 			// Detach any bundle rootfs overlays mounted by buildActorContainers
 			// before the failure, mirroring teardownActor's cleanup.
-			if err := imagecache.UnmountAllUnder(p.actorDirs.GetOciBundleDir()); err != nil {
+			if err := s.cleanupActorBundle(cleanupCtx, actorUID, p.actorDirs.GetOciBundleDir()); err != nil {
 				slog.WarnContext(ctx, "Failed to unmount bundle rootfs overlays after Run failure", slog.Any("err", err))
 			}
 		}
@@ -424,7 +436,12 @@ func (s *AteomService) coldBootActor(ctx context.Context, p actorBootParams) (re
 	// Clean stale per-sandbox state before anything touches the host upper dir.
 	// Also  create the runtime dir for the sockets.
 
-	s.cleanupSandboxState(ctx, actorUID)
+	if err := s.ensureActorStopped(ctx, actorUID); err != nil {
+		return err
+	}
+	if err := s.cleanupSandboxState(ctx, actorUID); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(kata.VMDir(actorUID), 0o700); err != nil {
 		return fmt.Errorf("while creating VM dir: %w", err)
 	}
@@ -504,28 +521,35 @@ func (s *AteomService) coldBootActor(ctx context.Context, p actorBootParams) (re
 		return err
 	}
 	defer func() {
-		if retErr != nil && vfsdCmd.Process != nil {
-			_ = vfsdCmd.Process.Kill()
-			_, _ = vfsdCmd.Process.Wait()
+		if retErr != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := s.stopActorHostProcess(cleanupCtx, actorUID, vfsdCmd); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
 		}
 	}()
 
 	// Launch a bare VMM (CH + api-socket); ateom owns this process for teardown.
 	apiSocket := filepath.Join(kata.VMDir(actorUID), "clh-api.sock")
 	chCmd, client, err := ch.LaunchVMM(ctx, ch.LaunchVMMOptions{
-		Binary:      rr.chBinary,
-		APISocket:   apiSocket,
-		Stdout:      slogWriter{ctx},
-		Stderr:      slogWriter{ctx},
-		SysProcAttr: leaf.SysProcAttr(),
+		Binary:           rr.chBinary,
+		APISocket:        apiSocket,
+		Stdout:           slogWriter{ctx},
+		Stderr:           slogWriter{ctx},
+		SysProcAttr:      leaf.SysProcAttr(),
+		CleanupOnFailure: s.failedActorProcessCleanup(actorUID),
 	})
 	if err != nil {
 		return fmt.Errorf("while launching VMM: %w", err)
 	}
 	defer func() {
-		if retErr != nil && chCmd.Process != nil {
-			_ = chCmd.Process.Kill()
-			_, _ = chCmd.Process.Wait()
+		if retErr != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := s.stopActorHostProcess(cleanupCtx, actorUID, chCmd); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
 		}
 	}()
 
@@ -719,13 +743,19 @@ func (s *AteomService) stageMergedRootfs(ctx context.Context, rr resolvedRuntime
 			return nil, fmt.Errorf("while staging system-info volumes: %w", err)
 		}
 	}
-	vfsdLog, _ := os.OpenFile(virtiofsdLogPath(id), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	vfsdLog, err := os.OpenFile(virtiofsdLogPath(id), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open virtiofsd log: %w", err)
+	}
+	// The child inherits its own descriptor; the parent never owns the log beyond Start.
+	defer vfsdLog.Close()
 	vfsdCmd, err := kata.StartVirtiofsd(ctx, kata.VirtiofsdOptions{
-		Binary:      rr.virtiofsd,
-		SocketPath:  kata.VirtiofsdSocketPath(id),
-		SharedDir:   kata.SharedDir(id),
-		Log:         vfsdLog,
-		SysProcAttr: procAttr,
+		Binary:           rr.virtiofsd,
+		SocketPath:       kata.VirtiofsdSocketPath(id),
+		SharedDir:        kata.SharedDir(id),
+		Log:              vfsdLog,
+		SysProcAttr:      procAttr,
+		CleanupOnFailure: s.failedActorProcessCleanup(id),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("while starting virtiofsd: %w", err)

@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
+	"github.com/agent-substrate/substrate/cmd/ateom-microvm/internal/ch"
 	"github.com/agent-substrate/substrate/cmd/ateom-microvm/internal/reaper"
 	"github.com/agent-substrate/substrate/internal/actorlock"
 	"github.com/agent-substrate/substrate/internal/actorlog"
@@ -110,6 +111,12 @@ func do(ctx context.Context) error {
 		return err
 	}
 	slog.InfoContext(ctx, "ateom-microvm booting", slog.String("version", version.Version))
+	if err := resourceConfigFromFlags().validate(); err != nil {
+		return err
+	}
+	if err := ch.ValidateRestorePolicy(*memoryRestorePolicy); err != nil {
+		return err
+	}
 	if *maxActors < 0 {
 		return fmt.Errorf("--max-actors must not be negative, got %d", *maxActors)
 	}
@@ -233,6 +240,10 @@ func do(ctx context.Context) error {
 	}
 	ateomService := NewService(*podUID, *chBinary, *guestDebug, *vmmMemReserve, *maxActors, tunnel, actorLogger)
 	ateomService.actorCgroups = actorCgroups
+	ateomService.runtimeResources, err = newRuntimeResources(ctx, resourceConfigFromFlags(), actorCgroups)
+	if err != nil {
+		return fmt.Errorf("initialize runtime resources: %w", err)
+	}
 	// The controller sets both from the downward API.
 	pool := ateomstats.Pool{Namespace: os.Getenv("POD_NAMESPACE"), Name: os.Getenv("WORKER_POOL_NAME")}
 	if pool.Namespace == "" || pool.Name == "" {
@@ -379,7 +390,8 @@ type AteomService struct {
 	maxActors int
 	// actorCgroups is set when the worker's cgroup is delegated, so each actor's
 	// VMM and virtiofsd run in a leaf of their own.
-	actorCgroups bool
+	actorCgroups     bool
+	runtimeResources *runtimeResources
 }
 
 var _ ateompb.AteomServer = (*AteomService)(nil)

@@ -315,6 +315,9 @@ func (r *WorkerPoolReconciler) recordSandboxConfigEvents(wp *atev1alpha1.WorkerP
 }
 
 func (r *WorkerPoolReconciler) applyDeployment(ctx context.Context, wp *atev1alpha1.WorkerPool) error {
+	if _, err := microVMResourceArgs(wp); err != nil {
+		return fmt.Errorf("invalid WorkerPool MicroVM resources: %w", err)
+	}
 	depAC := buildDeploymentApplyConfig(wp, ateomOTelSettings{
 		Endpoint:             r.OTelEndpoint,
 		MetricExportInterval: r.OTelMetricExportInterval,

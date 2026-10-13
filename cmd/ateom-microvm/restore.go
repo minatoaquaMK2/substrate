@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -35,7 +36,7 @@ import (
 
 	"github.com/agent-substrate/substrate/cmd/ateom-microvm/internal/ch"
 	"github.com/agent-substrate/substrate/cmd/ateom-microvm/internal/kata"
-	"github.com/agent-substrate/substrate/internal/imagecache"
+	"github.com/agent-substrate/substrate/cmd/ateom-microvm/internal/snapshotcache"
 	"github.com/agent-substrate/substrate/internal/proto/ateompb"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/internal/sizing"
@@ -127,6 +128,11 @@ func (s *AteomService) RestoreWorkload(ctx context.Context, req *ateompb.Restore
 		return nil, err
 	}
 	defer release()
+	startupDone, err := s.waitRuntimeStartup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer startupDone()
 
 	if err := s.tunnel.Deactivate(ctx, ateomstats.ActorAttributionFromRequest(req)); err != nil {
 		return nil, err
@@ -166,7 +172,9 @@ func (s *AteomService) RestoreWorkload(ctx context.Context, req *ateompb.Restore
 			// Detached: the RPC's context may be what failed it.
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cleanupCancel()
-			_ = s.unhostActor(cleanupCtx, attribution.UID)
+			if err := s.unhostActor(cleanupCtx, attribution.UID); err != nil {
+				slog.WarnContext(cleanupCtx, "retaining Actor resources after failed restore", slog.Any("err", err))
+			}
 		}
 	}()
 
@@ -234,13 +242,30 @@ func (s *AteomService) RestoreWorkload(ctx context.Context, req *ateompb.Restore
 // caller from their tar.
 func (s *AteomService) restoreMemoryFidelity(ctx context.Context, p actorBootParams, scope ateompb.SnapshotFidelity, restoreDir string, preserveRestoreDir bool, tStart time.Time) (retErr error) {
 	actorUID := p.actorUID
+	var snapshotLease *snapshotcache.Lease
+	defer func() {
+		// Registered before process cleanup defers, so it runs after them.
+		if retErr != nil && snapshotLease != nil {
+			if err := s.releaseSnapshotLease(actorUID, snapshotLease); err != nil {
+				slog.WarnContext(ctx, "retaining CoW snapshot lease after uncertain cleanup", slog.Any("err", err))
+			}
+		}
+	}()
+	if err := ch.ValidateRestorePolicy(*memoryRestorePolicy); err != nil {
+		return err
+	}
 
 	rr := s.resolveRuntime(p.assetPaths)
 	egress, err := s.tunnel.PrepareEgress(ctx, p.attribution(), p.egressGateway)
 	if err != nil {
 		return err
 	}
-	s.cleanupSandboxState(ctx, actorUID)
+	if err := s.ensureActorStopped(ctx, actorUID); err != nil {
+		return err
+	}
+	if err := s.cleanupSandboxState(ctx, actorUID); err != nil {
+		return err
+	}
 
 	// Repoint the snapshot's vsock socket to this actor's VMDir (the disk + kernel
 	// paths are content-addressed/per-actor and already line up on the same node).
@@ -315,9 +340,12 @@ func (s *AteomService) restoreMemoryFidelity(ctx context.Context, p actorBootPar
 		return err
 	}
 	defer func() {
-		if retErr != nil && vfsdCmd.Process != nil {
-			_ = vfsdCmd.Process.Kill()
-			_, _ = vfsdCmd.Process.Wait()
+		if retErr != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := s.stopActorHostProcess(cleanupCtx, actorUID, vfsdCmd); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
 		}
 	}()
 
@@ -337,7 +365,7 @@ func (s *AteomService) restoreMemoryFidelity(ctx context.Context, p actorBootPar
 			}
 			// Detach any bundle rootfs overlays mounted by buildActorContainers
 			// before the failure, mirroring teardownActor's cleanup.
-			if err := imagecache.UnmountAllUnder(p.actorDirs.GetOciBundleDir()); err != nil {
+			if err := s.cleanupActorBundle(cleanupCtx, actorUID, p.actorDirs.GetOciBundleDir()); err != nil {
 				slog.WarnContext(ctx, "Failed to unmount bundle rootfs overlays after Restore failure", slog.Any("err", err))
 			}
 		}
@@ -372,15 +400,19 @@ func (s *AteomService) restoreMemoryFidelity(ctx context.Context, p actorBootPar
 	tTap := time.Now()
 	chCmd, client, err := ch.LaunchVMM(ctx, ch.LaunchVMMOptions{
 		Binary: rr.chBinary, APISocket: apiSocket, Stdout: slogWriter{ctx}, Stderr: slogWriter{ctx},
-		SysProcAttr: leaf.SysProcAttr(),
+		SysProcAttr:      leaf.SysProcAttr(),
+		CleanupOnFailure: s.failedActorProcessCleanup(actorUID),
 	})
 	if err != nil {
 		return fmt.Errorf("while launching VMM for restore: %w", err)
 	}
 	defer func() {
-		if retErr != nil && chCmd.Process != nil {
-			_ = chCmd.Process.Kill()
-			_, _ = chCmd.Process.Wait()
+		if retErr != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := s.stopActorHostProcess(cleanupCtx, actorUID, chCmd); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
 		}
 	}()
 	// How guest RAM comes back depends on the VMM (see restoreMemMode), and the rest
@@ -394,10 +426,47 @@ func (s *AteomService) restoreMemoryFidelity(ctx context.Context, p actorBootPar
 	//     source afterwards and nothing merges against it, so it is dropped below and
 	//     the next snapshot stands on its own.
 	tLaunch := time.Now()
-	memMode := restoreMemMode(ctx, client.Info())
+	legacyMode := restoreMemMode(ctx, client.Info())
+	var config []byte
+	if *memoryRestorePolicy != ch.RestoreLegacy {
+		config, err = os.ReadFile(filepath.Join(restoreDir, "config.json"))
+		if err != nil {
+			return err
+		}
+	}
+	decision, err := ch.SelectRestoreMode(client.Info(), *memoryRestorePolicy, legacyMode, config)
+	if err != nil {
+		return err
+	}
+	if decision.Mode == ch.MemRestoreCopyOnWrite && !s.actorCgroups {
+		reason := "CoW cache leases require delegated Actor cgroup ownership"
+		if *memoryRestorePolicy == ch.RestoreCoWRequired {
+			return fmt.Errorf("required mmap CoW restore unavailable: %s", reason)
+		}
+		decision = ch.RestoreDecision{Mode: legacyMode, FallbackReason: reason}
+	}
+	memMode := decision.Mode
+	vmmRestoreDir := restoreDir
+	if memMode == ch.MemRestoreCopyOnWrite {
+		cache, err := snapshotcache.Open(*memorySnapshotCacheDir)
+		if err != nil {
+			return fmt.Errorf("opening CoW cache: %w", err)
+		}
+		// Reclaim only unleased objects. Durable hardlink leases protect running
+		// VMMs and crash orphans even when a different ateom performs this GC.
+		if _, err := cache.GCBefore(ctx, time.Now().Add(-time.Hour)); err != nil {
+			return fmt.Errorf("collecting CoW cache: %w", err)
+		}
+		snapshotLease, err = cache.Acquire(ctx, p.actorRef.Atespace, restoreDir)
+		if err != nil {
+			return fmt.Errorf("leasing CoW snapshot: %w", err)
+		}
+		vmmRestoreDir = snapshotLease.Dir
+	}
 	slog.InfoContext(ctx, "restoring guest memory",
-		slog.String("mode", memMode), slog.String("vmm_version", client.Info().Version))
-	if err := client.RestoreWithNetFDs(ctx, restoreDir, restoredNets, memMode); err != nil {
+		slog.String("mode", memMode), slog.String("vmm_version", client.Info().Version),
+		slog.String("requested_policy", *memoryRestorePolicy), slog.String("fallback_reason", decision.FallbackReason))
+	if err := client.RestoreWithNetFDs(ctx, vmmRestoreDir, restoredNets, memMode); err != nil {
 		return fmt.Errorf("while restoring VM with net FDs: %w", err)
 	}
 	tVMRestore := time.Now()
@@ -484,11 +553,15 @@ func (s *AteomService) restoreMemoryFidelity(ctx context.Context, p actorBootPar
 		chCmd: chCmd, vfsdCmd: vfsdCmd,
 		apiSocket: apiSocket, baseID: srcID, restoreSourceDir: restoreDir,
 		preserveRestoreSource:   preserveRestoreDir,
-		snapshotIsSelfContained: memMode == ch.MemRestoreEager,
+		snapshotIsSelfContained: memMode == ch.MemRestoreEager || memMode == ch.MemRestoreCopyOnWrite,
 		// Signaling an id the agent does not know fails the whole graceful
 		// shutdown with InvalidContainerId, so these must be what the guest runs.
 		workloadIDs: workloadIDs(ctrs),
 		guestAgent:  guestAC,
+	}
+
+	if snapshotLease != nil {
+		ra.snapshotLease = snapshotLease
 	}
 
 	// Re-attach stdout/stderr forwarding for each container over the agent

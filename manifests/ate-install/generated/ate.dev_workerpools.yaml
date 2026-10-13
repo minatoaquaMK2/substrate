@@ -74,6 +74,134 @@ spec:
           spec:
             description: spec defines the desired state of WorkerPool
             properties:
+              microVMResources:
+                description: |-
+                  MicroVMResources configures opt-in Worker-local CPU placement and memory
+                  restoration. It is allowed only for the microvm sandbox class. Omission
+                  preserves the runtime defaults and adds no resource-management arguments.
+                  These settings do not grant node-wide CPU exclusivity or increase quotas.
+                properties:
+                  actorCPUs:
+                    description: |-
+                      ActorCPUs is an optional debug CPU range list, such as "2-3,8". Its width
+                      controls the Actor CPU fence without changing guest vCPUs or CPU quota.
+                      Omission selects CPUs automatically. Runtime validates range ordering,
+                      capacity, reservation, topology, and current effective boundaries.
+                    maxLength: 4096
+                    minLength: 1
+                    pattern: ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$
+                    type: string
+                  cpuAllocationPolicy:
+                    default: "Off"
+                    description: |-
+                      CPUAllocationPolicy controls Worker-local logical-CPU sharing. Off keeps
+                      the existing unconstrained path unless managementReservedCPUs is set.
+                      NonOverlapping retains fractional bandwidth limits and may reduce density.
+                      Defaults to Off.
+                    enum:
+                    - "Off"
+                    - Shared
+                    - NonOverlapping
+                    type: string
+                  cpuEnforcement:
+                    default: Required
+                    description: |-
+                      CPUEnforcement selects Required initialization or an observable
+                      BestEffort fallback when support is unavailable. Defaults to Required.
+                    enum:
+                    - Required
+                    - BestEffort
+                    type: string
+                  cpuPlacement:
+                    default: Any
+                    description: |-
+                      CPUPlacement selects any logical CPUs, one last-level cache (LLC), or
+                      one NUMA node. Prefer policies report degradation; Require policies
+                      reject allocations that cannot fit a known single domain. Defaults to Any.
+                    enum:
+                    - Any
+                    - PreferLLC
+                    - RequireLLC
+                    - PreferNUMA
+                    - RequireNUMA
+                    type: string
+                  managementCPUWeight:
+                    default: 0
+                    description: |-
+                      ManagementCPUWeight sets the management leaf's relative cpu.weight.
+                      Zero leaves the weight unchanged; 1 through 10000 selects a weight.
+                      This does not guarantee CPU time under a shared parent quota. Defaults to 0.
+                    format: int32
+                    maximum: 10000
+                    minimum: 0
+                    type: integer
+                  managementReservedCPUs:
+                    description: |-
+                      ManagementReservedCPUs is a CPU range list excluded from every managed
+                      Actor. Management keeps the full parent CPU set. This is not guaranteed
+                      CPU time when a shared ancestor quota is exhausted. Omission reserves none.
+                    maxLength: 4096
+                    minLength: 1
+                    pattern: ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$
+                    type: string
+                  memoryPlacement:
+                    default: Inherit
+                    description: |-
+                      MemoryPlacement selects inherited memory nodes or the selected CPUs'
+                      local nodes. Local requires known topology and a valid parent memory-node
+                      boundary; it does not promise migration of existing/shared pages.
+                      Defaults to Inherit.
+                    enum:
+                    - Inherit
+                    - Local
+                    type: string
+                  memoryRestorePolicy:
+                    default: Legacy
+                    description: |-
+                      MemoryRestorePolicy selects Legacy, observable CopyOnWritePreferred fallback, or
+                      CopyOnWriteRequired compatibility enforcement. Current virtiofs-backed Actors
+                      require shared memory and cannot use private CoW restoration.
+                      Defaults to Legacy.
+                    enum:
+                    - Legacy
+                    - CopyOnWritePreferred
+                    - CopyOnWriteRequired
+                    type: string
+                  memorySnapshotCacheDirectory:
+                    description: |-
+                      MemorySnapshotCacheDirectory is an absolute private runtime-owned cache
+                      directory for immutable snapshot leases. It is required for either CoW
+                      policy. Path components may contain letters, numbers, dots, underscores,
+                      and hyphens, but must not be '.' or '..'. No additional volume is mounted;
+                      operators must provide a writable path with the intended lifecycle.
+                    maxLength: 4096
+                    minLength: 2
+                    pattern: ^/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+/?$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: cache directory must not contain dot or parent path
+                        components
+                      rule: self.split('/').all(part, part != '.' && part != '..')
+                  startupConcurrency:
+                    default: 0
+                    description: |-
+                      StartupConcurrency limits concurrent cold boots and restores per Worker.
+                      Zero retains unbounded startup concurrency. Defaults to 0.
+                    format: int32
+                    maximum: 2147483647
+                    minimum: 0
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: actorCPUs, topology placement, and local memory placement
+                    require cpuAllocationPolicy Shared or NonOverlapping
+                  rule: (has(self.cpuAllocationPolicy) && self.cpuAllocationPolicy
+                    != 'Off') || (!has(self.actorCPUs) && (!has(self.cpuPlacement)
+                    || self.cpuPlacement == 'Any') && (!has(self.memoryPlacement)
+                    || self.memoryPlacement == 'Inherit'))
+                - message: CoW restoration requires memorySnapshotCacheDirectory
+                  rule: '!has(self.memoryRestorePolicy) || self.memoryRestorePolicy
+                    == ''Legacy'' || has(self.memorySnapshotCacheDirectory)'
               replicas:
                 description: Replicas is the number of worker pods to run.
                 format: int32
@@ -492,6 +620,10 @@ spec:
             - sandboxClasses
             - workerImage
             type: object
+            x-kubernetes-validations:
+            - message: microVMResources requires the microvm sandbox class
+              rule: '!has(self.microVMResources) || (has(self.sandboxClasses) && size(self.sandboxClasses)
+                == 1 && self.sandboxClasses[0].name == ''microvm'')'
           status:
             description: status is the observed state of WorkerPool
             properties:
