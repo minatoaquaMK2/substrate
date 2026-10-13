@@ -132,6 +132,9 @@ func main() {
 		serverboot.Fatal(ctx, "Invalid --log-level", err)
 	}
 	slog.InfoContext(ctx, "atelet starting", slog.String("version", version.Version))
+	if *maxConcurrentStartups < 0 {
+		serverboot.Fatal(ctx, "Invalid startup concurrency", fmt.Errorf("--max-concurrent-startups must not be negative"))
+	}
 	if err := rejectStorageEnv(); err != nil {
 		serverboot.Fatal(ctx, "Invalid environment", err)
 	}
@@ -309,6 +312,7 @@ func main() {
 		csiDriverConfigGetter,
 		systemInfoVolumes,
 	)
+	wmService.startupSlots, _ = makeStartupSlots(*maxConcurrentStartups)
 	go systemInfoVolumes.run(ctx)
 
 	// Pre-download sandbox assets as SandboxConfigs appear/change so the first
@@ -488,6 +492,7 @@ type AteomHerder struct {
 	volumePlugins         map[string]volume.VolumePluginWorkerPlane
 	csiDriverConfigGetter csi.CSIDriverConfigGetter
 	systemInfoVolumes     *systemInfoVolumeRefresher
+	startupSlots          chan struct{}
 }
 
 var _ ateletpb.AteomHerderServer = (*AteomHerder)(nil)
@@ -526,6 +531,12 @@ func (s *AteomHerder) Run(ctx context.Context, req *ateletpb.RunRequest) (resp *
 	if errs := apivalidation.ValidateRunRequest(ctx, req); len(errs) > 0 {
 		return nil, resources.ToAPIError(errs)
 	}
+
+	startupDone, err := s.waitStartup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer startupDone()
 
 	actorUID := req.GetActorUid()
 	actorRef := resources.ActorRef{Atespace: req.GetAtespace(), Name: req.GetActorName()}
@@ -1056,6 +1067,13 @@ func (s *AteomHerder) Restore(ctx context.Context, req *ateletpb.RestoreRequest)
 		return nil, resources.ToAPIError(errs)
 	}
 
+	tStart := time.Now() // Includes resource waiting in total restore latency.
+	startupDone, err := s.waitStartup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer startupDone()
+
 	actorUID := req.GetActorUid()
 	actorRef := resources.ActorRef{Atespace: req.GetAtespace(), Name: req.GetActorName()}
 
@@ -1073,7 +1091,6 @@ func (s *AteomHerder) Restore(ctx context.Context, req *ateletpb.RestoreRequest)
 	// download/decompress, the OCI image unpack, and ateom's own work. Reported on
 	// the way out, so a failed restore still accounts for the phases it completed.
 	// Phases left at zero never ran.
-	tStart := time.Now()
 	var dMount, dManifest, dAssets, dDownload, dBundles, dAteom time.Duration
 	op := snapshotOp{
 		templateNamespace: req.GetActorTemplateAtespace(),
