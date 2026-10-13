@@ -18,6 +18,8 @@ package kata
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -48,12 +50,35 @@ import (
 // next sweep (the stagers tolerate a leftover dir — they unmount stale binds
 // and reuse mountpoints).
 func CleanupSandboxState(ctx context.Context, id string) {
+	_ = CleanupSandboxFiles(ctx, id)
+	cleanupSandboxProcesses(ctx, id)
+}
+
+// CleanupSandboxFiles removes only sandbox files and mounts. The caller must
+// prove all managed processes stopped before calling it.
+func CleanupSandboxFiles(ctx context.Context, id string) error {
+	return cleanupSandboxFiles(ctx, id, sandboxFileOps{
+		readMountinfo: func() ([]byte, error) { return os.ReadFile("/proc/self/mountinfo") },
+		unmount:       func(path string) error { return unix.Unmount(path, unix.MNT_DETACH) },
+		removeAll:     os.RemoveAll,
+	})
+}
+
+type sandboxFileOps struct {
+	readMountinfo func() ([]byte, error)
+	unmount       func(string) error
+	removeAll     func(string) error
+}
+
+func cleanupSandboxFiles(ctx context.Context, id string, ops sandboxFileOps) error {
 	dirs := []string{
 		filepath.Join("/run/kata-containers/shared/sandboxes", id),
 		filepath.Join(vcVMDir, id),
 	}
 	removable := make(map[string]bool, len(dirs))
-	if b, err := os.ReadFile("/proc/self/mountinfo"); err != nil {
+	var errs []error
+	if b, err := ops.readMountinfo(); err != nil {
+		errs = append(errs, fmt.Errorf("read sandbox mount table: %w", err))
 		// Without the mount table there is no telling what is still mounted
 		// under the dirs, so none of them is provably safe to remove.
 		slog.WarnContext(ctx, "Cannot read mountinfo; leaving sandbox dirs in place",
@@ -80,7 +105,8 @@ func CleanupSandboxState(ctx context.Context, id string) {
 		// Deepest paths first so child mounts unmount before their parents.
 		sort.Slice(mounts, func(i, j int) bool { return len(mounts[i].mp) > len(mounts[j].mp) })
 		for _, m := range mounts {
-			if err := unix.Unmount(m.mp, unix.MNT_DETACH); err != nil {
+			if err := ops.unmount(m.mp); err != nil {
+				errs = append(errs, fmt.Errorf("unmount sandbox path %q: %w", m.mp, err))
 				slog.WarnContext(ctx, "Failed to unmount leftover sandbox mount",
 					slog.String("mount", m.mp), slog.Any("err", err))
 				removable[m.dir] = false
@@ -93,11 +119,16 @@ func CleanupSandboxState(ctx context.Context, id string) {
 				slog.String("dir", d))
 			continue
 		}
-		if err := os.RemoveAll(d); err != nil {
+		if err := ops.removeAll(d); err != nil {
+			errs = append(errs, fmt.Errorf("remove sandbox path %q: %w", d, err))
 			slog.WarnContext(ctx, "Failed to remove leftover sandbox dir",
 				slog.String("dir", d), slog.Any("err", err))
 		}
 	}
+	return errors.Join(errs...)
+}
+
+func cleanupSandboxProcesses(ctx context.Context, id string) {
 	// Kill orphaned per-sandbox processes (cloud-hypervisor / virtiofsd) left by
 	// a prior killed attempt: a canceled Create leaves the CH it spawned running
 	// (reparented to us) holding guest RAM and stale sockets. Matched strictly by

@@ -88,6 +88,17 @@ def verify_file(filepath):
     return True
 
 
+def is_raw_evidence(filepath):
+    """Raw records and upstream diffs must retain their exact bytes/grammar."""
+    _, ext = os.path.splitext(filepath)
+    return (
+        (filepath.startswith("docs/benchmarks/results/") and ext == ".jsonl")
+        or (filepath.startswith("docs/research/verification/") and ext in (".log", ".jsonl"))
+        or (filepath.startswith("docs/upstream/dependencies/validation/") and ext == ".log")
+        or (filepath.startswith("docs/upstream/dependencies/") and ext == ".patch")
+    )
+
+
 def main():
     # Get tracked files via git ls-files
     try:
@@ -104,6 +115,10 @@ def main():
             continue
         _, ext = os.path.splitext(filepath)
         filename = os.path.basename(filepath)
+
+        # Machine-readable evidence is data, not a new source compilation unit.
+        if is_raw_evidence(filepath):
+            continue
 
         # Skip non-source-code files
         if ext in ['.md', '.txt', '.png', '.jpg', '.jpeg', '.gif', '.mp4', '.json', '.pdf', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.svg']:

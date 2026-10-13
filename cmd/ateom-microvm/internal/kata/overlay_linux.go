@@ -119,6 +119,9 @@ type VirtiofsdOptions struct {
 	Log        io.Writer
 	// SysProcAttr, when set, is applied to the virtiofsd process.
 	SysProcAttr *syscall.SysProcAttr
+	// CleanupOnFailure bounds and verifies cleanup when readiness fails after Start.
+	// A nil callback preserves the legacy caller-owned process behavior.
+	CleanupOnFailure func(context.Context, *exec.Cmd) error
 }
 
 // virtiofsdArgs builds the virtiofsd command line for o.
@@ -154,7 +157,11 @@ func StartVirtiofsd(ctx context.Context, o VirtiofsdOptions) (*exec.Cmd, error) 
 		return nil, fmt.Errorf("starting virtiofsd: %w", err)
 	}
 	if err := waitForSocket(ctx, o.SocketPath, virtiofsdSocketTimeout); err != nil {
-		_ = cmd.Process.Kill()
+		if o.CleanupOnFailure != nil {
+			err = errors.Join(err, o.CleanupOnFailure(ctx, cmd))
+		} else {
+			_ = cmd.Process.Kill()
+		}
 		return nil, err
 	}
 	return cmd, nil

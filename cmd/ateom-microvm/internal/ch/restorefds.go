@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -54,6 +55,9 @@ type LaunchVMMOptions struct {
 	Stdout, Stderr interface{ Write([]byte) (int, error) }
 	// SysProcAttr, when set, is applied to the VMM process.
 	SysProcAttr *syscall.SysProcAttr
+	// CleanupOnFailure bounds and verifies cleanup when readiness fails after Start.
+	// A nil callback preserves the legacy caller-owned process behavior.
+	CleanupOnFailure func(context.Context, *exec.Cmd) error
 }
 
 // LaunchVMM starts a cloud-hypervisor process with only an api-socket (no VM)
@@ -79,8 +83,12 @@ func LaunchVMM(ctx context.Context, o LaunchVMMOptions) (*exec.Cmd, *Client, err
 	}
 	client := NewClient(o.APISocket)
 	if _, err := client.WaitReady(ctx, 15*time.Second); err != nil {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		if o.CleanupOnFailure != nil {
+			err = errors.Join(err, o.CleanupOnFailure(ctx, cmd))
+		} else {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
 		return nil, nil, fmt.Errorf("while waiting for VMM api-socket: %w", err)
 	}
 	return cmd, client, nil

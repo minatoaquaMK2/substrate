@@ -1,0 +1,583 @@
+diff --git a/vmm/src/api/openapi/cloud-hypervisor.yaml b/vmm/src/api/openapi/cloud-hypervisor.yaml
+index 1547b8d..e96e856 100644
+--- a/vmm/src/api/openapi/cloud-hypervisor.yaml
++++ b/vmm/src/api/openapi/cloud-hypervisor.yaml
+@@ -1484,7 +1484,7 @@ components:
+ 
+     MemoryRestoreMode:
+       type: string
+-      enum: [Copy, OnDemand]
++      enum: [Copy, OnDemand, CopyOnWrite]
+       default: Copy
+ 
+     RestoreConfig:
+diff --git a/vmm/src/config.rs b/vmm/src/config.rs
+index 900fd31..2e6330e 100644
+--- a/vmm/src/config.rs
++++ b/vmm/src/config.rs
+@@ -391,7 +391,7 @@ pub enum ValidationError {
+     #[error("Number of Net FDs passed for '{0}' during Restore: {1}. Expected: {2}")]
+     RestoreNetFdCountMismatch(String, usize, usize),
+     /// Prefault cannot be combined with on-demand restore
+-    #[error("'prefault' cannot be combined with 'memory_restore_mode=ondemand'")]
++    #[error("'prefault' requires 'memory_restore_mode=copy'")]
+     InvalidRestorePrefaultWithOnDemand,
+     /// Path provided in landlock-rules doesn't exist
+     #[error("Path {0:?} provided in landlock-rules does not exist")]
+@@ -2782,6 +2782,8 @@ pub enum MemoryRestoreMode {
+     Copy,
+     /// Restore lazily by faulting snapshot pages into guest RAM on demand.
+     OnDemand,
++    /// Strict private-anonymous file-backed CoW restore.
++    CopyOnWrite,
+ }
+ 
+ #[derive(Debug, Error)]
+@@ -2797,6 +2799,7 @@ impl FromStr for MemoryRestoreMode {
+         match s.to_lowercase().as_str() {
+             "copy" => Ok(Self::Copy),
+             "ondemand" => Ok(Self::OnDemand),
++            "copyonwrite" => Ok(Self::CopyOnWrite),
+             _ => Err(MemoryRestoreModeParseError::InvalidValue(s.to_owned())),
+         }
+     }
+@@ -2817,7 +2820,7 @@ pub struct RestoreConfig {
+ 
+ impl RestoreConfig {
+     pub const SYNTAX: &'static str = "Restore from a VM snapshot. \
+-        \nRestore parameters \"source_url=<source_url>,prefault=on|off,memory_restore_mode=copy|ondemand,\
++        \nRestore parameters \"source_url=<source_url>,prefault=on|off,memory_restore_mode=copy|ondemand|copyonwrite,\
+         net_fds=<list_of_net_ids_with_their_associated_fds>,resume=true|false\" \
+         \n`source_url` should be a valid URL (e.g file:///foo/bar or tcp://192.168.1.10/foo) \
+         \n`prefault` controls eager prefaulting for the copy-based restore path (disabled by default) \
+@@ -2880,7 +2883,7 @@ impl RestoreConfig {
+     // corresponding 'RestoreNetConfig' with a matched 'id' and expected
+     // number of FDs.
+     pub fn validate(&self, vm_config: &VmConfig) -> ValidationResult<()> {
+-        if self.memory_restore_mode == MemoryRestoreMode::OnDemand && self.prefault {
++        if self.memory_restore_mode != MemoryRestoreMode::Copy && self.prefault {
+             return Err(ValidationError::InvalidRestorePrefaultWithOnDemand);
+         }
+ 
+diff --git a/vmm/src/cow_restore.rs b/vmm/src/cow_restore.rs
+new file mode 100644
+index 0000000..cfdbb3e
+--- /dev/null
++++ b/vmm/src/cow_restore.rs
+@@ -0,0 +1,307 @@
++// Copyright 2026 Google LLC
++// SPDX-License-Identifier: Apache-2.0
++
++//! Strict private-anonymous snapshot restore. No shared/vhost-user fallback.
++
++use std::fs::File;
++use std::io;
++use std::os::fd::AsRawFd;
++
++use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryRegion};
++use vm_migration::protocol::MemoryRangeTable;
++
++use crate::GuestMemoryMmap;
++
++pub(crate) const CAPABILITY: &str = "restore-cow-strict-v1";
++
++// Caller must hold exclusive ownership of the newly allocated memory before
++// registering memslots or handing pointers to device threads. Published source
++// inodes must never be truncated or overwritten during the mapping's lifetime.
++pub(crate) fn restore(
++    memory: &GuestMemoryMmap,
++    source: &File,
++    ranges: &MemoryRangeTable,
++) -> io::Result<()> {
++    // SAFETY: _SC_PAGESIZE takes no pointers and returns the host page size.
++    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
++    if page <= 0 {
++        return Err(io::Error::other("Invalid host page size"));
++    }
++    let page = page as u64;
++    let source_len = source.metadata()?.len();
++    let mut offset: u64 = 0;
++    let mut windows = Vec::new();
++    let mut seen = Vec::new();
++    // Validate the entire plan before modifying any guest mapping.
++    for range in ranges.regions() {
++        let invalid =
++            || io::Error::new(io::ErrorKind::InvalidInput, "Unsupported CoW memory range");
++        let end = range.gpa.checked_add(range.length).ok_or_else(invalid)?;
++        let file_end = offset.checked_add(range.length).ok_or_else(invalid)?;
++        if range.length == 0
++            || range.gpa % page != 0
++            || range.length % page != 0
++            || offset % page != 0
++            || file_end > source_len
++            || file_end > i64::MAX as u64
++            || range.length > usize::MAX as u64
++        {
++            return Err(invalid());
++        }
++        let region = memory
++            .find_region(GuestAddress(range.gpa))
++            .ok_or_else(invalid)?;
++        let flags = region.flags();
++        if region.file_offset().is_some()
++            || flags & libc::MAP_PRIVATE == 0
++            || flags & libc::MAP_ANONYMOUS == 0
++            || flags & (libc::MAP_SHARED | libc::MAP_HUGETLB) != 0
++            || end
++                > region
++                    .start_addr()
++                    .raw_value()
++                    .checked_add(region.len())
++                    .ok_or_else(invalid)?
++            || seen
++                .iter()
++                .any(|&(start, stop)| range.gpa < stop && end > start)
++        {
++            return Err(invalid());
++        }
++        let address = memory
++            .get_host_address(GuestAddress(range.gpa))
++            .map_err(|_| invalid())?;
++        windows.push((
++            address,
++            range.length as usize,
++            offset as libc::off_t,
++            flags & libc::MAP_NORESERVE,
++        ));
++        seen.push((range.gpa, end));
++        offset = file_end;
++    }
++    // This strict subset has no external or unplugged RAM. Containment and
++    // nonoverlap above, plus equal lengths, prove complete guest RAM coverage.
++    let ram_len = memory.iter().try_fold(0u64, |total, region| {
++        total.checked_add(region.len()).ok_or_else(|| {
++            io::Error::new(io::ErrorKind::InvalidInput, "CoW guest RAM length overflow")
++        })
++    })?;
++    if offset == 0 || offset != ram_len || offset != source_len {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "CoW snapshot must exactly cover all guest RAM and source bytes",
++        ));
++    }
++    for (address, length, offset, reserve) in windows {
++        // SAFETY: every window was checked page-aligned, nonoverlapping and
++        // wholly within exclusively owned anonymous RAM. MAP_FIXED replaces
++        // only that window. The read-only fd is live and cannot map past EOF.
++        let mapped = unsafe {
++            libc::mmap(
++                address.cast(),
++                length,
++                libc::PROT_READ | libc::PROT_WRITE,
++                libc::MAP_PRIVATE | libc::MAP_FIXED | reserve,
++                source.as_raw_fd(),
++                offset,
++            )
++        };
++        if mapped == libc::MAP_FAILED {
++            // The caller aborts and drops this memory manager on any error.
++            return Err(io::Error::last_os_error());
++        }
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use std::fs;
++    use std::io::{Read, Seek, SeekFrom, Write};
++
++    use vm_memory::{Bytes, FileOffset, MmapRegion};
++    use vm_migration::protocol::MemoryRange;
++
++    use super::*;
++    use crate::GuestRegionMmap;
++    use crate::vm_config::VmConfig;
++
++    fn page() -> u64 {
++        // SAFETY: _SC_PAGESIZE reads a scalar system property with no pointers.
++        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
++    }
++    fn table(start: u64, length: u64) -> MemoryRangeTable {
++        let mut t = MemoryRangeTable::default();
++        t.push(MemoryRange { gpa: start, length });
++        t
++    }
++    fn image() -> File {
++        let mut f = tempfile::tempfile().unwrap();
++        f.write_all(&vec![0x31; page() as usize]).unwrap();
++        f.set_len(2 * page()).unwrap();
++        f
++    }
++    fn guest() -> GuestMemoryMmap {
++        GuestMemoryMmap::from_ranges(&[(GuestAddress(0), (2 * page()) as usize)]).unwrap()
++    }
++    // Mirrors MemoryManager::send's dense volatile-copy branch. The mmap
++    // metadata intentionally remains private anonymous so checkpoints use it.
++    fn checkpoint(g: &GuestMemoryMmap) -> File {
++        let mut f = tempfile::tempfile().unwrap();
++        let mut n = 0;
++        while n < 2 * page() {
++            n += g
++                .write_volatile_to(GuestAddress(n), &mut f, (2 * page() - n) as usize)
++                .unwrap() as u64;
++        }
++        f
++    }
++    #[test]
++    fn cow_api_selection_is_explicit_and_prefault_is_rejected() {
++        use crate::config::{MemoryRestoreMode, RestoreConfig};
++        let default = RestoreConfig::parse("source_url=/tmp/snapshot").unwrap();
++        assert_eq!(default.memory_restore_mode, MemoryRestoreMode::Copy);
++        let cow = RestoreConfig::parse("source_url=/tmp/snapshot,memory_restore_mode=copyonwrite")
++            .unwrap();
++        assert_eq!(cow.memory_restore_mode, MemoryRestoreMode::CopyOnWrite);
++        let parsed: RestoreConfig = serde_json::from_str(
++            r#"{"source_url":"/tmp/snapshot","memory_restore_mode":"CopyOnWrite"}"#,
++        )
++        .unwrap();
++        assert_eq!(parsed.memory_restore_mode, MemoryRestoreMode::CopyOnWrite);
++        let prefault = RestoreConfig {
++            prefault: true,
++            ..cow
++        };
++        assert!(
++            prefault
++                .validate(&serde_json::from_str::<VmConfig>("{}").unwrap())
++                .is_err()
++        );
++    }
++    #[test]
++    fn cow_clones_and_recheckpoint_preserve_private_dirty_pages() {
++        let mut source = image();
++        let t = table(0, 2 * page());
++        let a = guest();
++        let b = guest();
++        restore(&a, &source, &t).unwrap();
++        restore(&b, &source, &t).unwrap();
++        assert_eq!(a.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x31);
++        assert_eq!(b.read_obj::<u8>(GuestAddress(page())).unwrap(), 0);
++        a.write_obj::<u8>(0xa1, GuestAddress(0)).unwrap();
++        b.write_obj::<u8>(0xb2, GuestAddress(page())).unwrap();
++        assert_eq!(b.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x31);
++        assert_eq!(a.read_obj::<u8>(GuestAddress(page())).unwrap(), 0);
++        source.seek(SeekFrom::Start(0)).unwrap();
++        let mut byte = [0];
++        source.read_exact(&mut byte).unwrap();
++        assert_eq!(byte[0], 0x31);
++        for (vm, first, second) in [(&a, 0xa1, 0), (&b, 0x31, 0xb2)] {
++            let mut next = checkpoint(vm);
++            for _ in 0..3 {
++                let restored = guest();
++                restore(&restored, &next, &t).unwrap();
++                assert_eq!(restored.read_obj::<u8>(GuestAddress(0)).unwrap(), first);
++                assert_eq!(
++                    restored.read_obj::<u8>(GuestAddress(page())).unwrap(),
++                    second
++                );
++                next = checkpoint(&restored);
++            }
++        }
++    }
++    #[test]
++    fn cow_rejects_invalid_ranges_before_any_mapping() {
++        let g = guest();
++        let f = image();
++        for t in [
++            table(1, page()),
++            table(0, 3 * page()),
++            table(0, 0),
++            table(u64::MAX - 1, page()),
++        ] {
++            assert!(restore(&g, &f, &t).is_err());
++        }
++        let mut t = table(0, page());
++        t.push(MemoryRange {
++            gpa: 0,
++            length: page(),
++        });
++        assert!(restore(&g, &f, &t).is_err());
++        assert_eq!(g.read_obj::<u8>(GuestAddress(0)).unwrap(), 0);
++        let short = tempfile::tempfile().unwrap();
++        short.set_len(page()).unwrap();
++        assert!(restore(&g, &short, &table(0, 2 * page())).is_err());
++    }
++    #[test]
++    fn cow_rejects_shared_and_private_file_backed_memory() {
++        for flags in [libc::MAP_SHARED, libc::MAP_PRIVATE] {
++            let f = image();
++            let region = MmapRegion::build(
++                Some(FileOffset::new(f, 0)),
++                (2 * page()) as usize,
++                libc::PROT_READ | libc::PROT_WRITE,
++                flags,
++            )
++            .unwrap();
++            let g = GuestMemoryMmap::from_regions(vec![
++                GuestRegionMmap::new(region, GuestAddress(0)).unwrap(),
++            ])
++            .unwrap();
++            assert!(restore(&g, &image(), &table(0, 2 * page())).is_err());
++        }
++    }
++    #[test]
++    fn cow_mapping_survives_source_unlink_and_descriptor_close() {
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path().join("memory-ranges");
++        fs::write(&path, vec![0x5a; (2 * page()) as usize]).unwrap();
++        let file = File::open(&path).unwrap();
++        let g = guest();
++        restore(&g, &file, &table(0, 2 * page())).unwrap();
++        fs::remove_file(path).unwrap();
++        drop(file);
++        assert_eq!(g.read_obj::<u8>(GuestAddress(page())).unwrap(), 0x5a);
++    }
++    #[test]
++    fn cow_rejects_empty_range_table() {
++        let g = guest();
++        assert!(restore(&g, &image(), &MemoryRangeTable::default()).is_err());
++    }
++    #[test]
++    fn cow_rejects_partial_ram_coverage_before_mapping() {
++        let g = guest();
++        g.write_obj::<u8>(0x7c, GuestAddress(0)).unwrap();
++        let source = tempfile::tempfile().unwrap();
++        source.set_len(page()).unwrap();
++        assert!(restore(&g, &source, &table(0, page())).is_err());
++        assert_eq!(g.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x7c);
++    }
++    #[test]
++    fn cow_rejects_trailing_source_bytes_before_mapping() {
++        let g = guest();
++        let source = image();
++        source.set_len(3 * page()).unwrap();
++        g.write_obj::<u8>(0x7c, GuestAddress(0)).unwrap();
++        assert!(restore(&g, &source, &table(0, 2 * page())).is_err());
++        assert_eq!(g.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x7c);
++    }
++    #[test]
++    fn cow_accepts_complete_discontiguous_ram() {
++        let g = GuestMemoryMmap::from_ranges(&[
++            (GuestAddress(0), page() as usize),
++            (GuestAddress(3 * page()), page() as usize),
++        ])
++        .unwrap();
++        let mut ranges = table(0, page());
++        ranges.push(MemoryRange {
++            gpa: 3 * page(),
++            length: page(),
++        });
++        restore(&g, &image(), &ranges).unwrap();
++        assert_eq!(g.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x31);
++        assert_eq!(g.read_obj::<u8>(GuestAddress(3 * page())).unwrap(), 0);
++    }
++}
+diff --git a/vmm/src/lib.rs b/vmm/src/lib.rs
+index 1af7022..3d18f0e 100644
+--- a/vmm/src/lib.rs
++++ b/vmm/src/lib.rs
+@@ -80,6 +80,7 @@ pub mod config;
+ pub mod console_devices;
+ #[cfg(all(target_arch = "x86_64", feature = "guest_debug"))]
+ mod coredump;
++mod cow_restore;
+ pub mod cpu;
+ pub mod device_manager;
+ pub mod device_tree;
+@@ -2546,7 +2547,11 @@ impl RequestHandler for Vmm {
+             build_version,
+             version,
+             pid: process::id() as i64,
+-            features: feature_list(),
++            features: {
++                let mut features = feature_list();
++                features.push(cow_restore::CAPABILITY.to_owned());
++                features
++            },
+         }
+     }
+ 
+diff --git a/vmm/src/memory_manager.rs b/vmm/src/memory_manager.rs
+index d04fcbb..d13dfd4 100644
+--- a/vmm/src/memory_manager.rs
++++ b/vmm/src/memory_manager.rs
+@@ -63,7 +63,9 @@ use crate::uffd::{
+     UffdRange,
+ };
+ use crate::vm_config::{HotplugMethod, MemoryConfig, MemoryZoneConfig};
+-use crate::{GuestMemoryMmap, GuestRegionMmap, MEMORY_MANAGER_SNAPSHOT_ID, userfaultfd};
++use crate::{
++    GuestMemoryMmap, GuestRegionMmap, MEMORY_MANAGER_SNAPSHOT_ID, cow_restore, userfaultfd,
++};
+ 
+ struct UffdHandler {
+     stop_event: EventFd,
+@@ -395,6 +397,9 @@ pub enum Error {
+     #[error("Error copying snapshot into region")]
+     SnapshotCopy(#[source] GuestMemoryError),
+ 
++    #[error("Error mapping CoW snapshot")]
++    SnapshotCoW(#[source] io::Error),
++
+     /// Failed to allocate MMIO address
+     #[error("Failed to allocate MMIO address")]
+     AllocateMmioAddress,
+@@ -1911,6 +1916,29 @@ impl MemoryManager {
+                     &mem_snapshot.memory_ranges,
+                     exit_evt,
+                 )?;
++            } else if memory_restore_mode == MemoryRestoreMode::CopyOnWrite {
++                // Replacing VMAs loses their NUMA/THP policies. Keep this initial
++                // capability limited to the explicitly supported RAM subset.
++                if config.shared
++                    || config.hugepages
++                    || config.thp
++                    || config.mergeable
++                    || config.hotplug_size.unwrap_or(0) != 0
++                    || config.hotplugged_size.unwrap_or(0) != 0
++                    || config.zones.as_ref().is_some_and(|z| !z.is_empty())
++                {
++                    return Err(Error::SnapshotCoW(io::Error::new(
++                        io::ErrorKind::InvalidInput,
++                        "CoW requires plain private RAM without zones, THP, merging, or hotplug",
++                    )));
++                }
++                let source = File::open(memory_file_path).map_err(Error::SnapshotOpen)?;
++                cow_restore::restore(
++                    &mm.lock().unwrap().guest_memory.memory(),
++                    &source,
++                    &mem_snapshot.memory_ranges,
++                )
++                .map_err(Error::SnapshotCoW)?;
+             } else {
+                 mm.lock()
+                     .unwrap()
+diff --git a/vmm/src/vm.rs b/vmm/src/vm.rs
+index 3bcb5a3..b9e7792 100644
+--- a/vmm/src/vm.rs
++++ b/vmm/src/vm.rs
+@@ -1363,6 +1363,19 @@ impl Vm {
+     ) -> Result<Self> {
+         trace_scoped!("Vm::new");
+ 
++        // Strict restore must not fall through to fresh anonymous RAM when the
++        // memory-manager subtree is missing. Reject before hypervisor creation.
++        if memory_restore_mode == Some(MemoryRestoreMode::CopyOnWrite)
++            && snapshot_from_id(snapshot, MEMORY_MANAGER_SNAPSHOT_ID).is_none()
++        {
++            return Err(Error::MemoryManager(MemoryManagerError::SnapshotCoW(
++                io::Error::new(
++                    io::ErrorKind::InvalidInput,
++                    "CoW restore requires a memory manager snapshot",
++                ),
++            )));
++        }
++
+         #[cfg(not(target_arch = "riscv64"))]
+         let timestamp = Instant::now();
+ 
+@@ -4106,3 +4119,104 @@ pub fn test_vm() {
+         }
+     }
+ }
++
++#[cfg(all(test, feature = "kvm", target_arch = "x86_64"))]
++mod cow_preflight_tests {
++    use std::panic::{AssertUnwindSafe, catch_unwind};
++    use std::sync::atomic::{AtomicBool, Ordering};
++
++    use hypervisor::arch::x86::CpuIdEntry;
++
++    use super::*;
++
++    struct PreflightHypervisor(Arc<AtomicBool>);
++    impl hypervisor::Hypervisor for PreflightHypervisor {
++        fn hypervisor_type(&self) -> hypervisor::HypervisorType {
++            hypervisor::HypervisorType::Kvm
++        }
++        fn create_vm(
++            &self,
++            _: HypervisorVmConfig,
++        ) -> result::Result<Arc<dyn hypervisor::Vm>, hypervisor::HypervisorError> {
++            self.0.store(true, Ordering::SeqCst);
++            Err(hypervisor::HypervisorError::VmCreate(anyhow!(
++                "Preflight reached VM creation"
++            )))
++        }
++        fn get_supported_cpuid(
++            &self,
++        ) -> result::Result<Vec<CpuIdEntry>, hypervisor::HypervisorError> {
++            unreachable!("VM creation stops this test")
++        }
++        fn get_max_vcpus(&self) -> u32 {
++            1
++        }
++    }
++
++    fn construct(
++        mode: MemoryRestoreMode,
++        snapshot: Option<&Snapshot>,
++        reached: Arc<AtomicBool>,
++    ) -> Result<Vm> {
++        let event = || EventFd::new(libc::EFD_NONBLOCK).unwrap();
++        Vm::new(
++            Arc::new(Mutex::new(serde_json::from_str("{}").unwrap())),
++            event(),
++            event(),
++            event(),
++            #[cfg(feature = "guest_debug")]
++            event(),
++            &SeccompAction::Allow,
++            Arc::new(PreflightHypervisor(reached)),
++            event(),
++            None,
++            None,
++            Arc::new(Mutex::new(None)),
++            snapshot,
++            Some("/unused-snapshot"),
++            Some(false),
++            Some(mode),
++        )
++    }
++
++    #[test]
++    fn cow_rejects_missing_memory_snapshot_before_vm_creation() {
++        let root = Snapshot::default();
++        for snapshot in [None, Some(&root)] {
++            let reached = Arc::new(AtomicBool::new(false));
++            let result = catch_unwind(AssertUnwindSafe(|| {
++                construct(MemoryRestoreMode::CopyOnWrite, snapshot, reached.clone())
++            }));
++            assert!(
++                !reached.load(Ordering::SeqCst),
++                "Strict CoW reached VM creation without saved memory"
++            );
++            assert!(matches!(
++                result,
++                Ok(Err(Error::MemoryManager(MemoryManagerError::SnapshotCoW(
++                    _
++                ))))
++            ));
++        }
++    }
++
++    #[test]
++    fn cow_preflight_preserves_legacy_and_present_memory_paths() {
++        let empty = Snapshot::default();
++        let mut present = Snapshot::default();
++        present.add_snapshot(MEMORY_MANAGER_SNAPSHOT_ID.to_owned(), Snapshot::default());
++        for (mode, snapshot) in [
++            (MemoryRestoreMode::Copy, None),
++            (MemoryRestoreMode::OnDemand, Some(&empty)),
++            (MemoryRestoreMode::CopyOnWrite, Some(&present)),
++        ] {
++            let reached = Arc::new(AtomicBool::new(false));
++            let result = catch_unwind(AssertUnwindSafe(|| {
++                construct(mode, snapshot, reached.clone())
++            }));
++            // Existing create_hypervisor_vm unwraps the sentinel error.
++            assert!(result.is_err());
++            assert!(reached.load(Ordering::SeqCst));
++        }
++    }
++}
