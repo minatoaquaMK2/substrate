@@ -1,0 +1,246 @@
+{
+  "schema_version": 1,
+  "kind": "hashes of implementation, test, configuration and dependency-patch source bytes",
+  "original_tested_source": "65097aaff066dcb3769a9e38d9fc57734a0f67ab",
+  "upstream_base": "c1ab95dea49bacfdeefcb00dd67b66d27372021c",
+  "scope": "Changed non-documentation implementation/test/configuration files relative to upstream base, plus the CH patch. Unchanged upstream files are outside this manifest.",
+  "publication_requirement": "These source bytes must match in the publication candidate. Documentation and evidence references differ, so the whole tree does not match.",
+  "files": [
+    {
+      "path": "benchmarking/runtime/adapter.py",
+      "sha256": "e4d2de6f295c543be3702db9407ef9d1427d045685f280323a2eb65b232250bd"
+    },
+    {
+      "path": "benchmarking/runtime/observe.py",
+      "sha256": "a1d99be5b6fd84d4efa0003709ac27b83a5a69ecc4f650cd4dfc7235bc7e53b1"
+    },
+    {
+      "path": "benchmarking/runtime/runner.py",
+      "sha256": "9074cf254fea895d07fceee279580c6868589fcfb610db2a7cdf23b8f6800ef4"
+    },
+    {
+      "path": "benchmarking/runtime/smoke_glutton.py",
+      "sha256": "124556ee81c7e2c60207b1647c7c4c673174a64c3b2d30c68a32ed5c97fc84e8"
+    },
+    {
+      "path": "benchmarking/runtime/test_adversarial.py",
+      "sha256": "f4cf14543b45879c08148bdaa77cd199e907d0ce4b5b00101a77b59848eb90cf"
+    },
+    {
+      "path": "benchmarking/runtime/test_runtime.py",
+      "sha256": "9ca5a9144a220f5ef0e9f7af444b1e78ea3cb59e651285bf604595706c9b484d"
+    },
+    {
+      "path": "cmd/ate-setup/internal/render/node_management_test.go",
+      "sha256": "79e91589311ba4432060ebb3a04cc15c3a23c3b9c8940911f931cba2ae44a228"
+    },
+    {
+      "path": "cmd/atecontroller/internal/controllers/workerpool_apply.go",
+      "sha256": "cf8550b3191d27cb67eb25f5c4e9d3f3367847983aac2282edad1833fb0f5c06"
+    },
+    {
+      "path": "cmd/atecontroller/internal/controllers/workerpool_controller.go",
+      "sha256": "15a15dfef9d91bf2b2b3035522e195b8fab11ea5b2562fed036126483032708e"
+    },
+    {
+      "path": "cmd/atecontroller/internal/controllers/workerpool_resources.go",
+      "sha256": "580243b5ffbc8630616dda2503cb7006c422a5d57b5b4a8fd05205d811417f54"
+    },
+    {
+      "path": "cmd/atecontroller/internal/controllers/workerpool_resources_test.go",
+      "sha256": "e836268c82bbd913c343a4846383ba1ef3c7107b63da111e8634e9766f55b092"
+    },
+    {
+      "path": "cmd/atelet/main.go",
+      "sha256": "7bae2e06cbc0d4fc09de7d6ca73d74dfa5820acf42a7000b57eb41f9dc2c0aef"
+    },
+    {
+      "path": "cmd/atelet/startup_limit.go",
+      "sha256": "2fb494b3c349acf99e01bbbbca3fab499932a92bddb3c7e278159203d05dee6c"
+    },
+    {
+      "path": "cmd/atelet/startup_limit_test.go",
+      "sha256": "72d985bfb063ece7ba724d63aab4865c48253a4167c42fbc8830f11caaf22d2e"
+    },
+    {
+      "path": "cmd/ateom-microvm/checkpoint.go",
+      "sha256": "4eee2318879260ee9146b38598dda54e3e5ee271ba04e20149dc576d6bc9358c"
+    },
+    {
+      "path": "cmd/ateom-microvm/hosted.go",
+      "sha256": "4460fce04df0a3c2e9f703f845572aaa22ab6aeeaaab7ad83217769552d818f0"
+    },
+    {
+      "path": "cmd/ateom-microvm/internal/ch/cow.go",
+      "sha256": "0047d3d3a1cae91253f5fd92185bee2b4a9ebf18730de6b57046bfb2e7beb1ca"
+    },
+    {
+      "path": "cmd/ateom-microvm/internal/ch/cow_test.go",
+      "sha256": "94562668877bd395f25fef570cc7fb1fa8dc6b75f4ed1d3211969d1a74e8c3e5"
+    },
+    {
+      "path": "cmd/ateom-microvm/internal/ch/restorefds.go",
+      "sha256": "62a216543c76724ec40e85124ab3634992a4c27e3d6a76ba33a1909eb5224476"
+    },
+    {
+      "path": "cmd/ateom-microvm/internal/kata/cleanup_files_test.go",
+      "sha256": "b927d39947c7bfe1b8a46638f16fa4716b65cd47f5b838c8f818b4c93cf8ee95"
+    },
+    {
+      "path": "cmd/ateom-microvm/internal/kata/cleanup_linux.go",
+      "sha256": "d34f459aedd174f85d5ff3cceff8ca474bcd769ded3d7676991544c59eae2741"
+    },
+    {
+      "path": "cmd/ateom-microvm/internal/kata/overlay_linux.go",
+      "sha256": "d0e18e5562d6e4844a7ee93c25420796e7a2d2cabc8459b64529085b7d9e5aab"
+    },
+    {
+      "path": "cmd/ateom-microvm/internal/snapshotcache/cache.go",
+      "sha256": "02d0b19a2ca1bca85c3089cef808af87f10c70388ae0dda3c15eb7266d8266b1"
+    },
+    {
+      "path": "cmd/ateom-microvm/internal/snapshotcache/cache_crash_test.go",
+      "sha256": "3b8b09e9543ddaaf15c434c8d2d04f7981ebd5f35a9d52dc9184ae1a0c29b7c5"
+    },
+    {
+      "path": "cmd/ateom-microvm/internal/snapshotcache/cache_test.go",
+      "sha256": "70397fc48c842215eb127c831219705ec342a1371e992738a391abcc4f266678"
+    },
+    {
+      "path": "cmd/ateom-microvm/main.go",
+      "sha256": "94f9039d0dbc89e1fd3a14d3444407ea3f534aa08c33856d502346c5605c4ed4"
+    },
+    {
+      "path": "cmd/ateom-microvm/resources.go",
+      "sha256": "cba96364ab78931a5ed38a1d8b9d035a2399aa9d941ce86ffce170d164d959cf"
+    },
+    {
+      "path": "cmd/ateom-microvm/resources_controller_preflight_test.go",
+      "sha256": "c3ea537aac2c3ded8b933d664a190c8fc25ce7f5c5cd0fd08c5d4114294dcac3"
+    },
+    {
+      "path": "cmd/ateom-microvm/resources_preflight_review_test.go",
+      "sha256": "1a3a183318d31973e31c350cc305d9a7c9f4e4de29c7d6fd7b5d4f339fa595ab"
+    },
+    {
+      "path": "cmd/ateom-microvm/resources_reconstruction_test.go",
+      "sha256": "b5d02ec24939eca73f9c71ed272dd0ef6fe6f80c27d063e39b222d49ccf73948"
+    },
+    {
+      "path": "cmd/ateom-microvm/resources_test.go",
+      "sha256": "89a47f46b62761e6e361c9a152367aae3259066ff40eebfaa601657bc60ba784"
+    },
+    {
+      "path": "cmd/ateom-microvm/restore.go",
+      "sha256": "d956472c69f17e0548d0a9e5fbbd9930d86f1680dcf4f227be4c21ccb28d1c13"
+    },
+    {
+      "path": "cmd/ateom-microvm/restore_policy.go",
+      "sha256": "1c78932303f50f74057e62e3f076633a4b92e5ff2197a28eae0babd88da1c6dd"
+    },
+    {
+      "path": "cmd/ateom-microvm/restore_policy_test.go",
+      "sha256": "9f5be23059df5b592197dfff5d88025df94bbdfd30a37ab793a37e8f001d8bdc"
+    },
+    {
+      "path": "cmd/ateom-microvm/run.go",
+      "sha256": "fc18cad54d2f6a8d7687f03efc8de2b80a8899525a7ee8298503f527a50b7f57"
+    },
+    {
+      "path": "docs/upstream/dependencies/cloud-hypervisor-v53-cow.patch",
+      "sha256": "4aa9b1cd5518750ed99ceafda8f56664b63341ddff0bab6524d8e738a1e22121"
+    },
+    {
+      "path": "hack/mmap-cow/check.py",
+      "sha256": "00b0975fcfa22883926d1896ad4b167d49cabf89ef26ed35e32e89d8a7121496"
+    },
+    {
+      "path": "hack/mmap-cow/guest.c",
+      "sha256": "b264e5d60f8bf7f30b838f9705e441138489f0fc873b573cb99ba91a6b6ac912"
+    },
+    {
+      "path": "hack/mmap-cow/test_check.py",
+      "sha256": "f852972aee05fb830820b2033d8d2c44c6b50a4a8af8e88d9db089f1c90b0819"
+    },
+    {
+      "path": "hack/runtime-resources/test_validate.py",
+      "sha256": "f7da13c981097d75799e8d112438184e04b520b1b7e394f5f19eeebb317fcc43"
+    },
+    {
+      "path": "hack/runtime-resources/validate.sh",
+      "sha256": "f8e614f26bbc6744b4cf9951aff8b4f23c10eb34eac1f03fd1cd2de89b6c4c6b"
+    },
+    {
+      "path": "hack/util/test_verify_boilerplate.py",
+      "sha256": "81a89d0b4028ff339b08954c578c50cab4f309b36d60441fc8759d0e4aaf901b"
+    },
+    {
+      "path": "hack/util/verify-boilerplate.py",
+      "sha256": "bd19e5613b330090b601780ede6a2f09bf28bb2bd91e32fc3571572264a96dcf"
+    },
+    {
+      "path": "internal/ateomcgroup/placement.go",
+      "sha256": "45664b193095c7025b38c4e8b46343839eb099fcb577083a100fb79bc9c97996"
+    },
+    {
+      "path": "internal/ateomcgroup/placement_linux_test.go",
+      "sha256": "9fad7faabee4b91b717052db12a68fec177486c767af10274f5c3d601f61d1e5"
+    },
+    {
+      "path": "internal/ateomcgroup/placement_test.go",
+      "sha256": "73eda4e3a51e458619959b36a83abdb876dea6fcb3119dd612118f6dca813ad8"
+    },
+    {
+      "path": "internal/cpuplacement/allocator.go",
+      "sha256": "505864ffe520c88c18dbb7db71d7eae6ca7cb3089f06fc440b4c28903b974bd3"
+    },
+    {
+      "path": "internal/cpuplacement/allocator_lifecycle_test.go",
+      "sha256": "c86baac1936c1084fd665961256a18a3b2e163938851e5b321d8f20fabbebade"
+    },
+    {
+      "path": "internal/cpuplacement/allocator_memory_test.go",
+      "sha256": "9a6d18ba2dba83461f9caa409c8970f2ee6036c861c1b97982ce8989b4b2fa4c"
+    },
+    {
+      "path": "internal/cpuplacement/allocator_test.go",
+      "sha256": "64a44db78810f642544458b034b693a8ed62156dd9f3f9376e055ceed256a2d8"
+    },
+    {
+      "path": "internal/cpuplacement/set.go",
+      "sha256": "3485cabf62d3ede3d048802a9de0af157e80cac7a3446556a87f287e63390758"
+    },
+    {
+      "path": "internal/cpuplacement/set_test.go",
+      "sha256": "7dfbf8220d33c129b0047881cf5c2bcf1ed20cb0b8b6d395ff7e2dcdf29e137d"
+    },
+    {
+      "path": "internal/cpuplacement/topology.go",
+      "sha256": "88c6e5c1ae3a6555c1c08f8d3d69581417cba479a0ab2fefebec598c89b395b0"
+    },
+    {
+      "path": "internal/cpuplacement/topology_test.go",
+      "sha256": "53671223312b8b9a1e0cfb18f8852bd1665cc8c84cfffd41e7c8daf0cbcd3e9f"
+    },
+    {
+      "path": "manifests/ate-install/components/node-management-reservation/kustomization.yaml",
+      "sha256": "f57fa06a23a4eb6620409f289cc8bdc442152543fcab465c8deb5bcbaaa76bed"
+    },
+    {
+      "path": "manifests/ate-install/generated/ate.dev_workerpools.yaml",
+      "sha256": "8850bb3cb92c658a7a24bca3da4cc978ebaba9450002f4b2c392e059d7dab188"
+    },
+    {
+      "path": "pkg/api/v1alpha1/workerpool_resources_validation_test.go",
+      "sha256": "2d76469e8bd0f182e4a4647de2d497274902bf21b5211de8d6d07a454b08fe79"
+    },
+    {
+      "path": "pkg/api/v1alpha1/workerpool_types.go",
+      "sha256": "3c909590a9e2a3e3a6ec205355f7e277736aeb243cd7e462bc50c140f994f47c"
+    },
+    {
+      "path": "pkg/api/v1alpha1/zz_generated.deepcopy.go",
+      "sha256": "718be8bd9e66e277de9b5f26e340689d2512f4771fe9c4e3717befd839572231"
+    }
+  ]
+}

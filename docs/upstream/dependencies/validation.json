@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "aggregate source validation; no raw logs or captured environment",
+  "original_tested_substrate_source": "65097aaff066dcb3769a9e38d9fc57734a0f67ab",
+  "vmm_base_sha": "9ed824d6d08df3e96f7d5f50795d9449ac99f431",
+  "patch_file": "cloud-hypervisor-v53-cow.patch",
+  "patch_file_sha256": "4aa9b1cd5518750ed99ceafda8f56664b63341ddff0bab6524d8e738a1e22121",
+  "source_toolchain": "Rust 1.89.0",
+  "raw_evidence": "Full original evidence is privately retained; excluded from public files and history.",
+  "checks": [
+    {
+      "command": "git apply --check cloud-hypervisor-v53-cow.patch",
+      "scope": "clean pinned CH v53 source",
+      "status": "passed"
+    },
+    {
+      "command": "cargo test --locked -p vmm --features kvm cow_",
+      "status": "passed",
+      "tests_passed": 11,
+      "requires_kvm": false
+    },
+    {
+      "command": "cargo check --locked --all-targets --features kvm",
+      "status": "passed"
+    },
+    {
+      "command": "CH_EXTRA_VERSION=experimental-strict-cow-reconstructed cargo build --locked -p cloud-hypervisor --bin cloud-hypervisor",
+      "status": "passed",
+      "artifact_class": "debug binary, not release artifact"
+    },
+    {
+      "command": "cargo clippy --locked -p vmm --all-targets --features kvm -- -D warnings",
+      "status": "failed_baseline",
+      "reason": "Untouched unfulfilled clippy::collapsible_match lint expectation"
+    },
+    {
+      "command": "cargo clippy --locked -p vmm --all-targets --features kvm -- -D warnings -A unfulfilled-lint-expectations",
+      "status": "passed_with_explicit_baseline_exception"
+    },
+    {
+      "command": "cargo +nightly-2026-10-13 fmt --all -- --check",
+      "status": "failed_baseline",
+      "reason": "Untouched comment indentation in virtio-devices/src/transport/pci_common_config.rs"
+    },
+    {
+      "command": "python3 -m unittest discover -s hack/mmap-cow -v",
+      "status": "passed",
+      "tests_passed": 9,
+      "scope": "No-KVM handoff tests, including native C full-region verifier"
+    },
+    {
+      "command": "python3 -m unittest discover -s hack/runtime-resources -v",
+      "status": "passed",
+      "tests_passed": 1,
+      "scope": "Delegation-script scope only, with fake Go executable"
+    },
+    {
+      "command": "go test -race -count=10 ./cmd/ateom-microvm/internal/snapshotcache -run '^TestCrashLease'",
+      "status": "passed",
+      "scope": "Crash-safe lease retention and source truncation"
+    }
+  ],
+  "full_changed_vmm_suite": "not_run",
+  "real_guest_kvm_validation": "not_run",
+  "real_delegated_cgroup_validation": "not_run",
+  "production_shared_memfd_external_virtiofs_cow": "dependency_blocked",
+  "performance_conclusion": null
+}

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "aggregate verification summary; no raw records or captured environment",
+  "original_tested_source": "65097aaff066dcb3769a9e38d9fc57734a0f67ab",
+  "upstream_base": "c1ab95dea49bacfdeefcb00dd67b66d27372021c",
+  "public_source_identity": "Production/test source bytes are preserved; compare source-hashes.json. Documentation and evidence packaging differ. No whole-tree identity claim.",
+  "public_candidate_validation": "Must be recorded separately for the final public commit.",
+  "raw_evidence": "Full original evidence is privately retained and not part of public files or history.",
+  "aggregate_verifier": {
+    "command": "hack/verify-all.sh",
+    "status": "passed",
+    "exit_code": 0,
+    "source_clean_before_and_after": true,
+    "generated_tracked_changes": false
+  },
+  "whole_root_module_race": {
+    "status": "completed_with_baseline_failure",
+    "exit_code": 1,
+    "packages": 214,
+    "successful_package_commands": 213,
+    "failed_package_commands": 1,
+    "packages_executing_tests": 138,
+    "packages_without_executed_tests": 76,
+    "top_level_tests": {
+      "passed": 2453,
+      "failed": 1,
+      "skipped": 344,
+      "explicit_af_unix_exclusions": 58
+    },
+    "sole_failure": {
+      "package": "internal/tarutil",
+      "test": "TestExtractAbsoluteNameStaysInside",
+      "classification": "Ownership restoration also fails on pristine upstream c1ab95dea49bacfdeefcb00dd67b66d27372021c under matching normalized process settings; unresolved."
+    },
+    "exclusion_inventory": "af-unix-exclusions.json"
+  },
+  "current_upstream_baseline": {
+    "source": "c1ab95dea49bacfdeefcb00dd67b66d27372021c",
+    "scope": "10 changed package directories since prior upstream checkpoint plus tarutil; not a full current-upstream run",
+    "top_level_tests": {
+      "passed": 493,
+      "failed": 1,
+      "skipped": 127,
+      "explicit_af_unix_exclusions": 6
+    }
+  },
+  "builds": [
+    {
+      "target": "linux/amd64",
+      "scope": [
+        "cmd/atecontroller",
+        "cmd/atelet",
+        "cmd/ateom-microvm",
+        "cmd/ateom-gvisor"
+      ],
+      "status": "passed"
+    },
+    {
+      "target": "linux/arm64",
+      "scope": "full root module",
+      "status": "passed"
+    }
+  ],
+  "python_suites": [
+    {
+      "directory": "benchmarking/runtime",
+      "passed": 41
+    },
+    {
+      "directory": "hack/mmap-cow",
+      "passed": 9
+    },
+    {
+      "directory": "hack/runtime-resources",
+      "passed": 1
+    },
+    {
+      "directory": "hack/util",
+      "pattern": "test_verify_boilerplate.py",
+      "passed": 3
+    }
+  ],
+  "benchmark_fixture": {
+    "repeated_checks_passed": 100,
+    "old_adapter_regression": "failed_as_expected",
+    "classification": "harness correctness only"
+  },
+  "native_glutton_smoke": {
+    "status": "passed",
+    "scope": "native workload protocol; no VM or cluster"
+  },
+  "independent_vmm_summary": "../../upstream/dependencies/validation.json",
+  "hardware_acceptance": "all_unrun",
+  "production_virtiofs_cow": "dependency_blocked",
+  "performance_conclusion": null
+}

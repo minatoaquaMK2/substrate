@@ -1,0 +1,242 @@
+{
+  "schema_version": 1,
+  "kind": "name-only test selection, not raw denial evidence",
+  "original_tested_source": "65097aaff066dcb3769a9e38d9fc57734a0f67ab",
+  "count": 58,
+  "scope": "Excluded only in their named packages after prior AF_UNIX operation denials. Exclusions are unrun, not passing.",
+  "raw_denial_evidence": "Privately retained; no original output, paths or host records are included.",
+  "exclusions": [
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/atelet",
+      "test": "TestLocalSnapshotGC"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/atelet",
+      "test": "TestRestoreUsesRequestSandboxAssets"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/atelet",
+      "test": "TestTerminateWithoutWorkerPodUID"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/atelet",
+      "test": "TestFetchAssetThroughPlugin"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/atelet",
+      "test": "TestCheckpointUploadWaitsOutPluginOutage"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/ateom-microvm",
+      "test": "TestDialAgentRetryGuestStopped"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/ateom-microvm",
+      "test": "TestDialAgentRetryNotListeningYet"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/ateom-microvm",
+      "test": "TestDialAgentRetryContextCanceled"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/ateom-microvm/internal/ch",
+      "test": "TestClientLifecycleCalls"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/ateom-microvm/internal/kata",
+      "test": "TestReseedRandomDevSendsData"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/cmd/ateom-microvm/internal/kata",
+      "test": "TestReseedRandomDevReturnsAgentError"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/atunnel",
+      "test": "TestBrokerCertificateSourceMintsAndReusesKey"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/atunnel",
+      "test": "TestBrokerCertificateSourceRejectsAteletOnDifferentNode"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/atunnel",
+      "test": "TestBrokerCertificateSourceRejectsExpiredCertificate"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestFetchAsset"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestFetchAssetRefusesSnapshots"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestFetchAssetManySegmentURIs"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestWaitReady"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestUploadFetchRoundTrip"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestFetchMissingIsNotFound"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestNodeRequestValidation"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestUploadRejectsSymlinkOutsideDir"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestFetchRejectsSymlinkOutsideDir"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestRejectsDirSymlinkOutsideRoot"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestCleanupSnapshot"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/objectstoreplugin",
+      "test": "TestCopySnapshot"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestEndToEndThroughServerboot"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestRelayForwardsTracesVerbatim"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestRelayForwardsMetrics"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestRelayForwardsLogsVerbatim"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestStopRemovesSocket"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestServeReplacesStaleSocket"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestRelayRefusesNonAteomSource"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestRelayRefusesMixedBatch"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestRelayAcceptsEveryAteomService"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestExportDropsClientMetadata"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestExportAttachesAteletHeaders"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/otlprelay",
+      "test": "TestSocketPermissions"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/pluginsocket",
+      "test": "TestCallFailsPromptlyAfterPluginLoss"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/pluginsocket",
+      "test": "TestCallWaitEndsWithCallerContext"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/pluginsocket",
+      "test": "TestSlowCallOutlastsReadyWait"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/pluginsocket",
+      "test": "TestCallRidesThroughPluginRestart"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/pluginsocket",
+      "test": "TestInFlightCallFailsWhenPluginDies"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/pluginsocket",
+      "test": "TestWaitReadyOutlastsReadyWait"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/tarutil",
+      "test": "TestCreateSkipsSockets"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_CreateVolume"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_DeleteVolume"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_AttachVolume"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_DetachVolume"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_MountVolume"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_UnmountVolume"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestClient_Identity"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_Capabilities_SkipAttachDetachWhenUnsupported"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_Capabilities_SkipStageUnstageWhenUnsupported"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_Capabilities_AllEnabledWhenQueryFailsOrEmpty"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_Capabilities_DisableAttachDetachAfterUnimplemented"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestPlugin_Capabilities_DisableStageUnstageAfterUnimplemented"
+    },
+    {
+      "package": "github.com/agent-substrate/substrate/internal/volume/csi",
+      "test": "TestNewCSIPlugin_CapabilityQueryFailureIsNotFatal"
+    }
+  ]
+}
